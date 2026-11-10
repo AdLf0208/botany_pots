@@ -1,0 +1,19 @@
+[package]
+# Port of: Botany Pots 21.1.44 (Darkhax-Minecraft/BotanyPots, LGPL-2.1-only),
+# Minecraft Java 1.21.1 NeoForge. Clean-room Rust rewrite; local-only until
+# publishing is approved, and publishable under LGPL-2.1 with this source.
+name = "horizon-botanypots"
+version = "21.1.44"
+edition = "2024"
+rust-version = "1.95"
+license = "LGPL-2.1-only"
+description = "Botany Pots for Horizon: the botany pot block (slice 1)"
+publish = false
+
+[lib]
+# This exact source is also injected as a same-crate module by horizon-mixins.
+path = "mixins/botanypots/runtime.rs"
+
+[workspace]
+members = ["tools/audit"]
+resolver = "2"

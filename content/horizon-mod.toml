@@ -1,0 +1,10 @@
+# Port-owned content mod for the Botany Pots 21.1.44 slice: the botany pot
+# block, its menu, and the carried soil/crop data. The models, textures and
+# the blockstate are the upstream mod's own LGPL-2.1 assets, read from the
+# exact ATM10 jar (see ../../_shared/carry-work/botanypots/SOURCE.md).
+id = "botanypots"
+name = "Botany Pots"
+version = "0.1.0"
+api = "0.2"
+side = "both"
+capabilities = ["registries"]
