@@ -1,0 +1,36 @@
+# Botany Pots for Horizon — slice 1: the botany pot, one flat SDK package.
+#
+# Migrated 2026-11-18 from the retired `.hnmod` container (Horizon's mod-API merge
+# #16941, launcher >= 0.2.70; PR #17992 cleans up the old files). This manifest is
+# the only one: identity, the content capability and the exact native pins.
+# `assets/` and `data/` are the carried content (the terracotta pot, its menu, its
+# loot table and the jar's soil/crop/interaction/fertilizer data), `src/` is the
+# port's code; both halves travel in one file, which is the point of the SDK layout.
+#
+# Licence: LGPL-2.1-only, read from the jar's `META-INF/neoforge.mods.toml` (+ its
+# `license_botanypots.txt`) -> rank 1 (copyleft). `LICENSE` and `LICENSE-NOTICE.md`
+# travel inside the package, and the same two texts ride in the data half as
+# `data/botanypots/license/`. Local-only until the maintainer approves publishing
+# (ARCHITECTURE.md §8); publishable under LGPL-2.1 with this complete source.
+id = "botanypots"
+name = "Botany Pots"
+version = "0.2.0"
+description = """A port of Botany Pots for Horizon: the terracotta botany pot — two player-only slots
+(soil and seed), a growth tick that advances while the crop's soil tag accepts the pot's soil, bone
+meal up to twenty ticks below ready, a harvest that rolls the mature crop's own loot table, and the
+pot's two-slot menu and growth readout. Four vanilla crops (wheat, carrots, potatoes, beetroots) are
+compiled in; the other 183 pots, the hopper and waxed forms, the tool slot, the comparator, the crop
+renderer and the modded crop/soil registries are not ported yet."""
+authors = ["Darkhax", "AdLf0208"]
+# The content API: exact and checked. This package ships carried content beside its
+# code, so the capability is a real claim; it is also the one value the schema has.
+api = "0.2"
+# The installation side, not the hook's: an integrated server belongs to the client
+# installation, so a LAN host or a single-player world needs both.
+side = "both"
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "0b14f8acfd97fa2c750e42795249dcc981178ca4"
+mixins = "e59da9094f0c2fdda6c627fe9eff22dec6a906f0"
