@@ -49,6 +49,27 @@ const KEY_BONE_MEAL: &str = "bone_meal";
 /// The fertilizer item this slice knows (`data/.../fertilizer/bone_meal.json`).
 const BONE_MEAL: &str = "minecraft:bone_meal";
 
+/// The operator level `/botanypots info` requires. The readout names a pot's soil,
+/// seed and growth at coordinates the caller chooses, so it is a gamemaster tool
+/// (level 2), as `/data` is — not a player command.
+pub(crate) const INFO_LEVEL: u8 = 2;
+
+/// The refusal a source below [`INFO_LEVEL`] gets. It names no pot and no block.
+pub(crate) const INFO_DENIED: &str =
+    "botanypots info: operator permission is required to inspect a pot's state";
+
+/// The answer for a position that holds no botany pot. It names no block: the
+/// readout must not become a way to read the world at arbitrary coordinates.
+pub(crate) const NOT_A_POT: &str = "not a botany pot";
+
+/// Whether a command source at `level` may read a pot: an operator only, wherever
+/// the pot is. A player's own level is their op level, so a de-opped player is
+/// refused even for a pot in front of them — the readout is a diagnostic, and the
+/// menu already shows a pot's growth to the player who opens it.
+pub(crate) fn info_permitted(level: u8) -> bool {
+    level >= INFO_LEVEL
+}
+
 /// The vanilla stack limit, used only when the item registry answers nothing for
 /// a drop (a loot table's item is always registered, so this is a fallback).
 const DEFAULT_STACK_LIMIT: u32 = 64;
@@ -741,25 +762,25 @@ impl Sight {
 }
 
 /// The readout for one position: the pot's growth, required ticks, soil, seed and
-/// readiness, or `"<block>: not a botany pot"`.
+/// readiness. A position holding anything else answers [`NOT_A_POT`], which names
+/// no block, so the command cannot be used to read the world at chosen coordinates.
 pub(crate) fn info_line(host: &mut dyn ServerHost, pos: [i32; 3]) -> String {
     let level = host.level(host.dimension());
     let block = level
         .and_then(|level| level.block(&*host, pos))
         .map(|block| block.id(&*host))
         .unwrap_or_else(|| "minecraft:air".to_owned());
-    let not_a_pot = format!("{block}: not a botany pot");
     if !is_pot(&block) {
-        return not_a_pot;
+        return NOT_A_POT.to_owned();
     }
     let Some(level) = level else {
-        return not_a_pot;
+        return NOT_A_POT.to_owned();
     };
     let Some(entity) = host.block_entity(level, pos) else {
-        return not_a_pot;
+        return NOT_A_POT.to_owned();
     };
     let Some(saved) = entity.data(&*host) else {
-        return not_a_pot;
+        return NOT_A_POT.to_owned();
     };
     let saved = read(&saved);
     let soil = entity_slot_key(&*host, &entity, SOIL_SLOT);
@@ -942,13 +963,26 @@ mod tests {
             "botanypots:terracotta_botany_pot: growth=52/1200 soil=minecraft:dirt \
              seed=minecraft:wheat_seeds ready=false"
         );
-        let other = Sight {
-            block: "minecraft:chest".to_owned(),
-            ..growing
-        };
+    }
+
+    #[test]
+    fn the_refusal_names_no_block() {
+        // `/botanypots info` takes coordinates, so a non-pot answer must not echo
+        // the block it found: that would turn the readout into a world probe.
+        assert_eq!(NOT_A_POT, "not a botany pot");
         assert!(
-            other.line().starts_with("minecraft:chest: growth="),
-            "a foreign block still prints its id"
+            !NOT_A_POT.contains(':'),
+            "the refusal must not carry a block id: {NOT_A_POT}"
         );
+    }
+
+    #[test]
+    fn the_readout_needs_an_operator() {
+        // A pot's soil, seed and growth at chosen coordinates is a gamemaster
+        // readout, so a player without level 2 must be refused.
+        assert!(!info_permitted(0), "a plain player");
+        assert!(!info_permitted(1), "a moderator");
+        assert!(info_permitted(INFO_LEVEL), "a gamemaster");
+        assert!(info_permitted(4), "the console");
     }
 }

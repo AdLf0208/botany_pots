@@ -18,9 +18,10 @@ package (mod API 0.2).
   (`../_shared/carry-work/botanypots/SOURCE.md`).
 - Code: `src/runtime.rs` is the pure engine (the compiled four-crop table, the
   growth rule, bone meal, yield rolls, the hopper insert rule; 15 unit tests);
-  `src/lib.rs` is the one `impl mod_api::Hooks`; `src/pot.rs` is the glue (block
-  entity Part, click Part, both containers and menus, the tick with the
-  auto-harvest and export, the harvest and `/botanypots info`; 9 more tests).
+  `src/lib.rs` is the one `impl mod_api::Hooks` (the operator-only
+  `/botanypots info` registration and its source re-check; 1 test); `src/pot.rs`
+  is the glue (block entity Part, click Part, both containers and menus, the tick
+  with the auto-harvest and export, the harvest and the readout; 11 more tests).
 - Scope, deviations, the coverage table, the defects fixed and the verification
   evidence: [`notes.md`](notes.md) and [`VALIDATION.md`](VALIDATION.md).
 

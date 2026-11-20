@@ -24,6 +24,10 @@ mod pot;
 
 pub mod runtime;
 
+/// The readout's usage. It takes a position, so the command reads a pot anywhere
+/// in the level; [`pot::INFO_LEVEL`] is the operator level it needs.
+const INFO_USAGE: &str = "botanypots info <pos:block_pos>";
+
 #[derive(Default)]
 struct Mod;
 
@@ -52,17 +56,24 @@ impl Hooks for Mod {
         }
     }
 
-    /// `/botanypots info <x> <y> <z>`: the readout the harness and players use
-    /// for a pot's growth, required ticks, soil, seed and readiness.
+    /// `/botanypots info <x> <y> <z>`: the readout the harness and operators use
+    /// for a pot's growth, required ticks, soil, seed and readiness. It names a
+    /// pot's contents at coordinates the caller chooses, so it is registered at
+    /// the gamemaster level (2), as `/data` is.
     fn register_commands(&self, _host: &mut dyn ServerHost, event: &mut RegisterCommandsEvent<'_>) {
         event
             .commands
-            .push(Command::new("botanypots info <pos:block_pos>"));
+            .push(Command::op(INFO_USAGE, pot::INFO_LEVEL));
     }
 
     /// The command body: the position is parsed and resolved by the server's
     /// dispatcher, so this only reads the pot and answers. The line is byte for
     /// byte the 0.1.0 one, so the existing e2e assertions still match.
+    ///
+    /// The usage is registered at [`pot::INFO_LEVEL`] *and* the source is checked
+    /// again here: a command source that reaches the body by another route (a
+    /// function, a future dispatcher change) is still refused, so a non-operator
+    /// cannot read a pot's state at coordinates they choose.
     fn run_mod_command(
         &self,
         host: &mut dyn ServerHost,
@@ -71,6 +82,10 @@ impl Hooks for Mod {
         let literals: Vec<&str> = event.command.literals.iter().map(String::as_str).collect();
         if literals.first() != Some(&"botanypots") {
             return Flow::Continue;
+        }
+        if !pot::info_permitted(event.source.permission().level()) {
+            let _ = host.commands().feedback(Text::literal(pot::INFO_DENIED));
+            return Flow::Cancel;
         }
         let line = match (
             literals.get(1),
@@ -81,5 +96,26 @@ impl Hooks for Mod {
         };
         let _ = host.commands().feedback(Text::literal(line));
         Flow::Cancel
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_info_command_is_operator_only() {
+        assert_eq!(pot::INFO_LEVEL, 2);
+        let command = Command::op(INFO_USAGE, pot::INFO_LEVEL);
+        assert_eq!(command.level, 2);
+        assert!(command.usage.starts_with("botanypots info "));
+        assert!(
+            !pot::info_permitted(0),
+            "a non-operator must not inspect a pot's remote state"
+        );
+        assert!(
+            pot::info_permitted(2),
+            "an operator still reads the pot it is aimed at"
+        );
     }
 }

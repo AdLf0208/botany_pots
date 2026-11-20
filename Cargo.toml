@@ -5,7 +5,7 @@
 #
 # Cargo's name and version are not the mod's identity: horizon-mod.toml is.
 name = "botanypots"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "LGPL-2.1-only"
 description = "Botany Pots for Horizon: the botany pot and the hopper botany pot (slice 2)"

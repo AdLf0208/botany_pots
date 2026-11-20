@@ -14,7 +14,7 @@
 # (ARCHITECTURE.md §8); publishable under LGPL-2.1 with this complete source.
 id = "botanypots"
 name = "Botany Pots"
-version = "0.2.1"
+version = "0.2.2"
 description = """A port of Botany Pots for Horizon: the terracotta botany pot — two player-only slots
 (soil and seed), a growth tick that advances while the crop's soil tag accepts the pot's soil, bone
 meal up to twenty ticks below ready, a harvest that rolls the mature crop's own loot table, and the
