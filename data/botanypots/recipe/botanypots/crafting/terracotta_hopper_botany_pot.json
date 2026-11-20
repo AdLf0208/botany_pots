@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "misc",
+  "group": "botanypots:hopper_pot",
+  "ingredients": [
+    "minecraft:hopper",
+    "botanypots:terracotta_botany_pot"
+  ],
+  "result": {
+    "id": "botanypots:terracotta_hopper_botany_pot",
+    "count": 1
+  }
+}
