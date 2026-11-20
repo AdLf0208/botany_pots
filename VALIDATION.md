@@ -1,5 +1,37 @@
 # Validation
 
+## 0.2.2 — the diagnostic is operator-only (2026-11-20)
+
+Validated on Linux against SDK nightly
+`0b14f8acfd97fa2c750e42795249dcc981178ca4` / mixins
+`e59da9094f0c2fdda6c627fe9eff22dec6a906f0` (`package_format` 6, `content_api`
+"0.2"). Every compile step ran in a `ports/tools/build-slot.sh` lease with
+`BUILD_LOCAL=1`, `CARGO_INCREMENTAL=0` and `rm -f Cargo.lock` first; no
+`--target-dir`.
+
+| Check | Command | Result |
+|---|---|---|
+| tests | `cargo test --offline` | **27 passed**, 0 failed (`evidence/botanypots/sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, **0 warnings** (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | `FMT_EXIT:0` (`sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` | **62,403 B**, sha256 `f76388af…23f9` (`sdk-build.log`) |
+| same package twice | the build again, `cmp` | identical (`sdk-build-second.log`, `sdk-reproducible.txt`) |
+| registry check | `cargo horizon-mod check botanypots.hmod` | `botanypots 0.2.2 (native-mod, format native-1/0b14f8a…/e59da90…, for 26.3)`, 62,403 B, exit 0 (`sdk-check.log`) |
+| fits | `cargo horizon-mod fits botanypots.hmod --build 0b14f8a` | `0b14f8a  made for`, exit 0 (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py botanypots` | **1/1** — 48 entries, no packed lock |
+| **e2e (launcher)** | `ports/tools/launcher-game.sh run botanypots` | **`PASS` + `EXIT:0`** (`evidence/botanypots-e2e/e2e-launcher.log`) |
+| **e2e (control)** | `GAME=$CONTROL_GAME` (the unmodded Nightly), same script | **`FAIL: cannot give botanypots:terracotta_botany_pot` + `EXIT:1`** (`e2e-control.log`) |
+| **e2e (selftest)** | `SELFTEST=1 …` | **`FAIL: SELFTEST: the hopper pot's storage holds 1 wheat (the check is alive)` + `EXIT:1`** (`e2e-selftest.log`) |
+| **e2e (slice-1 selftest)** | `SELFTEST=basic …` | **`FAIL: SELFTEST: the no-soil pot harvested nothing (the check is alive)` + `EXIT:1`** (`e2e-selftest-basic.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py botanypots-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` |
+
+The in-game leg adds phase 8b: the launched player (an operator) reads the pot, a
+non-pot position answers `not a botany pot` (naming no block), `deop` makes the same
+chat command answer `Unknown or incomplete command`, and `op` restores the readout.
+Every earlier phase is unchanged and still passes. The package was rebuilt after the
+legs to correct `README.md`'s test count; the delivered `.hmod` differs from the copy
+the launcher compiled in `README.md` only (not compiled) plus the generated `uses.json`.
+
 ## 0.2.1 — the hopper pot and the first in-game run (2026-11-20)
 
 Validated on Linux (cargo 1.97.0, edition 2024) against SDK nightly

@@ -839,3 +839,121 @@ unknown id: give refused, setblock left 'minecraft:air'
 > the crop renderer, the modded crop/soil registries.
 
 Skills: superpowers/using-superpowers,brainstorming,writing-plans,test-driven-development,systematic-debugging,verification-before-completion; BeautifulRust/rust-best-practices
+
+## Review fix (2026-11-20) — the diagnostic is operator-only (0.2.2)
+
+**The finding** (`levzzz5154`, 2026-11-20): `/botanypots info` was registered at level 0,
+so **any** player could read a pot's growth, soil and seed at coordinates they chose
+(`src/lib.rs`), and `src/pot.rs` answered a non-pot position with that block's id — a
+world probe by another name.
+
+### What changed
+
+- **The usage is a gamemaster tool**: registered with `Command::op(usage, 2)`
+  (`pot::INFO_LEVEL`), the same level `/data` needs, because it names a container's
+  contents anywhere in the level.
+- **The body re-checks the source**: `event.source.permission().level()` must be ≥ 2, so
+  a source that reaches the body by another route (a function, a future dispatcher
+  change) is refused too. The refusal is a fixed line (`pot::INFO_DENIED`) that names
+  no pot.
+- **A non-pot position names no block**: `info_line` answers `"not a botany pot"`
+  (`pot::NOT_A_POT`) instead of `"<block>: not a botany pot"`, so the command cannot be
+  used to read the world at arbitrary coordinates. The control leg's grep still matches
+  the plain refusal.
+- The pot's own line is unchanged byte for byte, so every existing e2e assertion still
+  matches.
+
+### Tests (written first, watched red)
+
+| Test | Proves |
+|---|---|
+| `tests::the_info_command_is_operator_only` (`src/lib.rs`) | `INFO_LEVEL == 2`, the command is registered with `Command::op(…, 2)`, and `info_permitted(0)` is false while `info_permitted(2)` is true |
+| `pot::tests::the_readout_needs_an_operator` | the predicate refuses levels 0 and 1 and admits 2 and 4 |
+| `pot::tests::the_refusal_names_no_block` | `NOT_A_POT` is `"not a botany pot"` and carries no `:` |
+
+Red first with `info_permitted` stubbed to `true`: **2 failed, 25 passed**; the fix made
+it **27 passed, 0 failed**.
+
+### In-game proof (phase 8b, `--offscreen`, the launcher build)
+
+```
+== the readout needs an operator ==
+  as an operator: botanypots:terracotta_botany_pot: growth=58/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
+  non-pot readout: not a botany pot
+  as a non-operator: Unknown or incomplete command. See below for error
+  as an operator again: botanypots:terracotta_botany_pot: growth=96/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
+```
+
+The launched player is an operator; `deop` drops the level and the same chat command is
+refused by the dispatcher, and `op` restores the readout. The two operator lines differ
+only in the growth the pot gained between them, which is the pot still ticking. The
+`non-pot readout` line is the air above the pot: it answers `not a botany pot` and names
+no block, which is the disclosure half of the finding proven in game.
+
+### Harness fixes found while re-running the leg
+
+Re-running the leg four times to record the operator phase exposed three pre-existing
+flakes in the slice-1/slice-2 phases; all three are fixed in `tools/e2e.sh`, and none of
+them was the port's code:
+
+1. **A bone-meal click on a pot that ripened inside the two-tick read window harvests
+   it.** `bone_meal_to_ready`, `bone_meal_to_cap` and the slice-1 phase now fertilise
+   only while the growth is below the bone-meal cap (`required - 20`) and then let the
+   pot ripen on its own ticks, polling `ready` instead of a fixed wait. One run had died
+   with `FAIL: the pot is not ready after 3 bone meals` because the third click harvested.
+2. **The `&&` chain at the end of `bone_meal_to_cap`'s loop body made the function return
+   non-zero** when the pot harvested during the *wait* (`growth 3 -> 566`), which exited
+   the script under `set -e` with no `FAIL:` verdict. It is an `if` now, and a growth that
+   fell between two reads is recognised as the harvest.
+3. **The overflow phase read the ground with an unverified `ctl tp` and a 10-block
+   radius.** The pot's own half-block collision can push a player teleported into its
+   space, so the phase retries the stand one block further out, clears loose item entities
+   around the pot first, counts over 24 blocks (`dropped_item ITEM RADIUS`) and asserts
+   the harvest's items (wheat in the inventory, wheat or seeds on the ground) exist. It
+   prints a diagnostic block (entity ids, the pot's readout, the player's counts, the
+   pot's NBT) if they do not.
+
+**Observation for the next slice (not fixed here):** one run of phase 14 measured the
+harvest as **two seeds and no wheat** (`items near the player: 2 x minecraft:wheat_seeds`),
+where every other run gave wheat + seeds. `roll_drops` adds the crop's produce whenever
+`host.item_key` resolves it, so a run in which it does not is a real question about that
+lookup inside a block-entity tick; the phase's diagnostic now records it, and the
+assertion counts the harvest's items rather than wheat alone, because the fix under test
+is "a full pot does not destroy its harvest".
+
+### Ladder and package (0.2.2)
+
+| Step | Command | Result |
+|---|---|---|
+| tests | `cargo test --offline` | **27 passed, 0 failed** (`evidence/botanypots/sdk-test.log`) |
+| lints | `cargo clippy --all-targets --offline -- -D warnings` | exit 0, 0 warnings (`sdk-clippy.log`) |
+| format | `cargo fmt --check` | `FMT_EXIT:0` (`sdk-fmt.log`) |
+| package | `rm -f Cargo.lock && cargo horizon-mod build` twice | **62,403 B**, sha256 `f76388af…23f9`, `cmp` identical (`sdk-build.log`, `sdk-build-second.log`, `sdk-reproducible.txt`) |
+| check | `cargo horizon-mod check botanypots.hmod` | `botanypots 0.2.2 (native-mod, format native-1/0b14f8a…/e59da90…, for 26.3)`, exit 0 (`sdk-check.log`) |
+| fits | `cargo horizon-mod fits … --build 0b14f8a` | `0b14f8a  made for`, exit 0 (`sdk-fits.log`) |
+| package gate | `python3 ports/tools/verify-sdk-package.py botanypots` | **1/1** (48 entries, no packed lock) |
+| in game | `ports/tools/launcher-game.sh run botanypots` | **`PASS` + `EXIT:0`** (`evidence/botanypots-e2e/e2e-launcher.log`) |
+| control | `GAME=$CONTROL_GAME`, same script | **`FAIL: cannot give botanypots:terracotta_botany_pot` + `EXIT:1`** |
+| counterfactuals | `SELFTEST=1` / `SELFTEST=basic` | **`EXIT:1`** each (`e2e-selftest.log`, `e2e-selftest-basic.log`) |
+| log gate | `python3 ports/tools/check-e2e-logs.py botanypots-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` |
+
+The package was rebuilt once after the in-game legs to correct this README's test
+count: compared with the copy the launcher compiled into the game, the delivered
+`.hmod` differs in **`README.md` only** (plus the generated `uses.json`), and
+`README.md` is not compiled — the same record the bigreactors 0.2.2 evidence carries.
+
+### Changelog for the resubmission (supersedes 0.2.1)
+
+> **0.2.2 — the diagnostic is operator-only.** `/botanypots info` now needs gamemaster
+> permission (level 2): it names a pot's soil, seed and growth at coordinates the caller
+> chooses, so a de-opped player is refused and the body re-checks the source as well as
+> the registration. A position holding no botany pot answers `not a botany pot` without
+> echoing the block id. The pot's own readout, the growth rule, bone meal, harvest, the
+> hopper pot and every carried file are unchanged; the e2e's bone-meal and overflow
+> phases were hardened (a click at the bone-meal cap can harvest, and the overflow read
+> now verifies its stand and clears loose items first). Package: **48 entries, 62,403 B**, sha256
+> `f76388afda5f28434323247b9e95d237de925de741cc806f6d8a78839e7f23f9`; `check` and `fits`
+> exit 0; 27 tests, clippy `-D warnings` clean; in game `PASS` + `EXIT:0`, the unmodded
+> Nightly `EXIT:1`, and both `SELFTEST` legs `EXIT:1`.
+
+Skills: superpowers/using-superpowers,systematic-debugging,test-driven-development,verification-before-completion; BeautifulRust/rust-best-practices
