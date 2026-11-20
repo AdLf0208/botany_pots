@@ -25,12 +25,26 @@ Validated on Linux against SDK nightly
 | **e2e (slice-1 selftest)** | `SELFTEST=basic …` | **`FAIL: SELFTEST: the no-soil pot harvested nothing (the check is alive)` + `EXIT:1`** (`e2e-selftest-basic.log`) |
 | log gate | `python3 ports/tools/check-e2e-logs.py botanypots-e2e --strict` | `logs=4 ok=4 missing-exit=0 bad-exit=0` |
 
-The in-game leg adds phase 8b: the launched player (an operator) reads the pot, a
-non-pot position answers `not a botany pot` (naming no block), `deop` makes the same
-chat command answer `Unknown or incomplete command`, and `op` restores the readout.
-Every earlier phase is unchanged and still passes. The package was rebuilt after the
-legs to correct `README.md`'s test count; the delivered `.hmod` differs from the copy
-the launcher compiled in `README.md` only (not compiled) plus the generated `uses.json`.
+The in-game leg adds phase 8b: the world's owner reads the pot, a non-pot position
+answers `not a botany pot` (naming no block), and the real non-operator — a **LAN guest
+at permission level 0** (`lan open 0`, guest commands off) — is refused `/botanypots
+info` while `/help` and `/list` still answer that same guest, after which the owner
+reads the pot again. The refusal is the dispatcher filtering a level-2 node
+(`horizon-command/src/lib.rs:922`); the level-0 answers are the differential that makes
+it mean "the gate", not "guests cannot run commands". Every earlier phase is unchanged
+and still passes.
+
+**Evidence repair (2026-11-21).** The first version of phase 8b used `deop`/`op` and was
+vacuous: both are dedicated-server commands and an integrated server refuses them
+(`game/commands/profiles.rs:16-23`), so the `Unknown or incomplete command` it matched was
+the failed `deop`'s own line while the player stayed level 4. The old log is kept as
+`evidence/botanypots-e2e/gate-before-fix.log`; the four legs above were re-run on
+2026-11-21 with the LAN-guest phase and `check-e2e-logs.py --strict` is green. The package
+did not change — `botanypots.hmod` is still 62,403 B, sha256
+`f76388afda5f28434323247b9e95d237de925de741cc806f6d8a78839e7f23f9` — so the launcher
+build it compiled is the same 0.2.2 code. The package had earlier been rebuilt after the
+first legs to correct `README.md`'s test count; the delivered `.hmod` differs from the
+copy the launcher compiled in `README.md` only (not compiled) plus the generated `uses.json`.
 
 ## 0.2.1 — the hopper pot and the first in-game run (2026-11-20)
 

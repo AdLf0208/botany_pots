@@ -740,6 +740,7 @@ unknown id: give refused, setblock left 'minecraft:air'
 | block/item tags `#botanypots:botany_pots` | **tested** — `execute if block … #botanypots:botany_pots`, stone control outside |
 | soil tags (`#botanypots:soil/dirt`, …) | **tested** — growth in dirt, sand refused (slice 1) |
 | growth rule, soil modifier, bone meal, yield rolls | **tested** — phases 3–7 + unit tests |
+| `/botanypots info` readout and its operator gate | **tested** — every readout in the scenario; phase 8b (a level-0 LAN guest is refused, `/help` and `/list` answer that same guest, the world's owner reads the pot) |
 | the other 181 pot variants (colours, materials) | **not ported** — later slices; only `terracotta_*` are registered |
 | waxed pots | **not ported** — no ticking/rendering mode |
 | the tool slot's effects (damage, enchantments, growth/yield modifiers) | **not ported** — the slot exists in the hopper menu and holds an item, but changes nothing |
@@ -876,19 +877,70 @@ it **27 passed, 0 failed**.
 
 ### In-game proof (phase 8b, `--offscreen`, the launcher build)
 
+The real non-operator is a **LAN guest at permission level 0**, not a de-opped player
+(see *Evidence repair* below for why). `ctl lan open 0` opens the world with guest
+commands off, so an integrated server gives every guest level 0 (`lan/hub.rs`
+`default_permission`), and the guest's own control client drives it. The gate is
+proven as a differential in one guest window: level-0 commands must answer, then the
+level-2 usage must not. Transcript of the 2026-11-21 run
+(`../_shared/evidence/botanypots-e2e/e2e-launcher.log`):
+
 ```
 == the readout needs an operator ==
-  as an operator: botanypots:terracotta_botany_pot: growth=58/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
+  as an operator: botanypots:terracotta_botany_pot: growth=51/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
   non-pot readout: not a botany pot
-  as a non-operator: Unknown or incomplete command. See below for error
-  as an operator again: botanypots:terracotta_botany_pot: growth=96/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
+  LAN port 44081 (guest commands off: a guest joins at level 0)
+  guest connect: {"ok":true}
+  the level-0 guest runs /help: /trigger <objective> [add|set]
+  the level-0 guest runs /list: There are 2 of a max of 8 players online: Player15607, Guest
+  as a level-0 guest: botanypots info 18 102 10<--[HERE] Unknown or incomplete command. See below for error There are 2 of a max of 8 players online: Player15607, Guest /trigger <objective> [add|set]
+  as an operator after the guest left: botanypots:terracotta_botany_pot: growth=319/1200 soil=minecraft:dirt seed=minecraft:wheat_seeds ready=false
 ```
 
-The launched player is an operator; `deop` drops the level and the same chat command is
-refused by the dispatcher, and `op` restores the readout. The two operator lines differ
-only in the growth the pot gained between them, which is the pot still ticking. The
-`non-pot readout` line is the air above the pot: it answers `not a botany pot` and names
-no block, which is the disclosure half of the finding proven in game.
+Both halves are load-bearing. `/help` printed the level-0 usage list and `/list`
+returned the server's own player list naming the guest, so the guest's command path
+is alive and the refusal cannot mean "guests cannot run commands". The guest then
+typed `/botanypots info`, the command node is filtered out at parse time because it
+requires level 2 (`horizon-command/src/lib.rs:922`, `permission > level` → the node
+is skipped), and the guest's window holds only the echo and
+`Unknown or incomplete command` — no `growth=`, no pot id. The world's owner (level 4,
+the world allows commands) still reads the pot afterwards. The `non-pot readout` line
+is the air above the pot: it answers `not a botany pot` and names no block, which is
+the disclosure half of the finding.
+
+### Evidence repair (2026-11-21) — the first phase 8b was vacuous
+
+The 0.2.2 transcript above used to read `as a non-operator: Unknown or incomplete
+command` after `ctl command "deop $PLAYER"`, and the phase **passed while the player
+stayed a level-4 operator**. `op`/`deop` are dedicated-server commands: on an
+integrated server both answer `command.unknown.command`
+(`crates/horizon-client/src/game/commands/profiles.rs:16-23` — `dedicated_lists`
+returns `Err(err("command.unknown.command", &[]))` unless `options.dedicated` is set).
+So the phase's own `deop` printed `Unknown or incomplete command`, the grep over the
+last 16 chat lines matched **that** line, and `/botanypots info` had answered with the
+readout all along. The old log is kept as `../_shared/evidence/botanypots-e2e/gate-before-fix.log`
+(its `as a non-operator` line is the failed `deop`'s refusal, and the operator readout
+immediately after it is the same player). A refusal text alone is ambiguous for exactly
+that reason, which is why the phase is now a differential.
+
+The package did not change: `botanypots.hmod` is still **62,403 B**, sha256
+`f76388afda5f28434323247b9e95d237de925de741cc806f6d8a78839e7f23f9` (0.2.2). Only
+`tools/e2e.sh` and this record changed. The 2026-11-21 legs (same package, same pin,
+`launcher-game.sh run botanypots`):
+
+| Leg | Verdict | Evidence |
+|---|---|---|
+| the package's own game, full scenario | **`PASS` + `EXIT:0`** | `e2e-launcher.log` |
+| the same scenario on the unmodded Nightly (`GAME=$CONTROL_GAME`) | **`FAIL: cannot give botanypots:terracotta_botany_pot` + `EXIT:1`** | `e2e-control.log` |
+| `SELFTEST=1` (hopper counterfactual) | **`FAIL: SELFTEST: the hopper pot's storage holds 1 wheat (the check is alive)` + `EXIT:1`** | `e2e-selftest.log` |
+| `SELFTEST=basic` (slice-1 counterfactual) | **`FAIL: SELFTEST: the no-soil pot harvested nothing (the check is alive)` + `EXIT:1`** | `e2e-selftest-basic.log` |
+| log gate | `python3 ports/tools/check-e2e-logs.py botanypots-e2e --strict` | exit 0, `logs=4 ok=4 missing-exit=0 bad-exit=0` |
+
+The guest leg also ran in both `SELFTEST` logs (they execute the scenario before their
+counterfactual) and gave the same three lines; the control leg stops at the first
+`give`, before phase 8b, as it should.
+
+Skills: superpowers/using-superpowers,systematic-debugging,verification-before-completion; BeautifulRust/none (no Rust change)
 
 ### Harness fixes found while re-running the leg
 
@@ -946,8 +998,8 @@ count: compared with the copy the launcher compiled into the game, the delivered
 
 > **0.2.2 — the diagnostic is operator-only.** `/botanypots info` now needs gamemaster
 > permission (level 2): it names a pot's soil, seed and growth at coordinates the caller
-> chooses, so a de-opped player is refused and the body re-checks the source as well as
-> the registration. A position holding no botany pot answers `not a botany pot` without
+> chooses, so a player below that level is refused and the body re-checks the source as
+> well as the registration. A position holding no botany pot answers `not a botany pot` without
 > echoing the block id. The pot's own readout, the growth rule, bone meal, harvest, the
 > hopper pot and every carried file are unchanged; the e2e's bone-meal and overflow
 > phases were hardened (a click at the bone-meal cap can harvest, and the overflow read

@@ -15,7 +15,12 @@
 #      more ticks make it ready;
 #   7. an empty-hand click harvests: the mature wheat crop's loot is popped and
 #      the growth resets;
-#   8. an empty-hand click on the reset pot harvests nothing.
+#   8. an empty-hand click on the reset pot harvests nothing;
+#   8b. `/botanypots info` is operator-only: a LAN guest at permission level 0 is
+#      refused while level-0 commands (`/help`, `/list`) still answer that same
+#      guest, and the world's owner still reads the pot (the review finding).
+#      `op`/`deop` are NOT used: they are dedicated-server commands and an
+#      integrated server refuses both (commands/profiles.rs:16-23).
 #
 # Slice 2 — the hopper pot (`botanypots:terracotta_hopper_botany_pot`), per the
 # parity rule:
@@ -65,6 +70,7 @@ GAME=${GAME:-$PORT/target/horizon-cargo/fast/horizon-client}
 CONTROL_GAME=${CONTROL_GAME:-}
 RES=${RES:-${HORIZON_RES:-/home/adlf/Desktop/horizon/.local/horizon-client/26.3}}
 SOCK=${SOCK:-/tmp/opencode/botanypots-e2e.sock}
+GSOCK=${GSOCK:-/tmp/opencode/botanypots-e2e-guest.sock}
 SELFTEST=${SELFTEST:-0}
 # DEV_MOD=1 also hands the delivered package to the game with `--dev-mod`.
 DEV_MOD=${DEV_MOD:-0}
@@ -91,11 +97,16 @@ rm -f "$SOCK"
 cd "$SCRATCH"
 
 ctl() { "$CTL" --socket "$SOCK" "$@"; }
+# The LAN guest's own control client (its own socket, its own game home). A
+# guest's command is a network command run by the server at the guest's own
+# permission level, which is 0 when the world was opened with guest commands
+# off (`lan open 0`; lan/hub.rs `default_permission`).
+gctl() { "$CTL" --socket "$GSOCK" "$@"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $* =="; }
 count_item() { ctl inventory | jq -r --arg i "$1" '.counts[$i] // 0'; }
 dropped_item() {
-    ctl entities 10 item \
+    ctl entities "${2:-10}" item \
         | jq -r --arg i "$1" '[.entities[] | select(.kind == "item" and .item.item == $i) | .item.count] | add // 0'
 }
 info() {
@@ -232,7 +243,7 @@ chest_items() { # x y z -> the /data get reply
 # Bone meal a pot to its cap without ever clicking a ready pot: a click on a
 # ready basic pot harvests, and a click on a ready hopper pot opens the menu.
 bone_meal_to_ready() { # x y z [tries]
-    local tries=${4:-3} i
+    local tries=${4:-3} i growth required
     stand_near "$1" "$3"
     ctl command "clear @s" >/dev/null
     ctl command "item replace entity @s hotbar.0 with minecraft:bone_meal 8" >/dev/null \
@@ -245,9 +256,22 @@ bone_meal_to_ready() { # x y z [tries]
         if [ "$(ready_of "$1" "$2" "$3")" = true ]; then
             return 0
         fi
-        ctl interact "$1" "$2" "$3" >/dev/null || fail "the bone meal click failed"
-        ctl close >/dev/null 2>&1 || true
+        # Only fertilise below the bone-meal cap: a pot at the cap cannot grow, and a
+        # click on one that ripened inside the two-tick read window harvests it
+        # instead (the trap the notes record). At the cap it ripens on its own.
+        growth=$(growth_of "$1" "$2" "$3")
+        required=$(required_of "$1" "$2" "$3")
+        if [ -n "$growth" ] && [ -n "$required" ] && [ "$growth" -lt $((required - 20)) ]; then
+            ctl interact "$1" "$2" "$3" >/dev/null || fail "the bone meal click failed"
+            ctl close >/dev/null 2>&1 || true
+        fi
         ctl wait 25 >/dev/null
+    done
+    for i in $(seq 12); do
+        if [ "$(ready_of "$1" "$2" "$3")" = true ]; then
+            return 0
+        fi
+        ctl wait 5 >/dev/null
     done
     [ "$(ready_of "$1" "$2" "$3")" = true ] || fail "the pot is not ready after $tries bone meals"
 }
@@ -266,9 +290,25 @@ bone_meal_to_cap() { # x y z [clicks]
     ctl wait 2 >/dev/null
     [ "$(ctl state | jq -r '.held.item // ""')" = "minecraft:bone_meal" ] \
         || fail "the held item is not bone meal"
-    local i before after
+    local i before after last="" required
     for i in $(seq "$clicks"); do
         before=$(growth_of "$1" "$2" "$3")
+        required=$(required_of "$1" "$2" "$3")
+        # The hopper pot harvests the tick it ripens, so a growth that fell since the
+        # last read *is* the harvest — there is nothing left to fertilise. (The pot
+        # can ripen during the wait after a meal, before the next click: a run on
+        # 2026-11-20 measured `growth 3 -> 566` and the old `&&` chain then exited
+        # the script under `set -e` instead of stopping the loop.)
+        if [ -n "$last" ] && [ -n "$before" ] && [ "$before" -lt "$last" ]; then
+            echo "  bone meal $i: harvested before the click (growth $last -> $before)"
+            return 0
+        fi
+        # A pot at the bone-meal cap cannot grow; clicking it only risks a harvest if
+        # it ripened inside the read window, so wait for its own tick instead.
+        if [ -n "$before" ] && [ -n "$required" ] && [ "$before" -ge $((required - 20)) ]; then
+            ctl wait 25 >/dev/null
+            continue
+        fi
         # Aim at the south face: the pot's shape is only half a block high, and a
         # click aimed at the block's centre sits on that shape's top edge (a click
         # there sometimes misses entirely).
@@ -279,7 +319,10 @@ bone_meal_to_cap() { # x y z [clicks]
         after=$(growth_of "$1" "$2" "$3")
         echo "  bone meal $i: growth $before -> $after"
         # A harvest resets the growth to below where it was: the pot is done.
-        [ -n "$after" ] && [ "$after" -lt "$before" ] && return 0
+        if [ -n "$after" ] && [ -n "$before" ] && [ "$after" -lt "$before" ]; then
+            return 0
+        fi
+        last=$after
     done
 }
 
@@ -309,6 +352,7 @@ fill_storage_with_sticks() { # x y z
 
 cleanup() {
     local status=$?
+    gctl quit >/dev/null 2>&1 || true
     ctl quit >/dev/null 2>&1 || true
     sleep 1
     rm -rf "$SCRATCH" || true
@@ -495,14 +539,23 @@ ctl wait 25
 first=$(growth_of "$X1" "$Y" "$Z1")
 echo "after bone meal 1: $(info "$X1" "$Y" "$Z1")"
 [ "$first" -ge $((before + 400)) ] || fail "bone meal added $(($first - before)) growth, expected at least 400"
-# A second meal reaches the required - 20 cap; a right click on a ready pot
-# harvests instead of fertilising, so stop as soon as it is ready.
-if [ "$(ready_of "$X1" "$Y" "$Z1")" != true ]; then
+# A second meal reaches the required - 20 cap; a right click on a pot that ripened
+# inside the two-tick read window harvests instead of fertilising, so only fertilise
+# below the cap and let the pot ripen on its own ticks.
+second_growth=$(growth_of "$X1" "$Y" "$Z1")
+second_required=$(required_of "$X1" "$Y" "$Z1")
+if [ -n "$second_growth" ] && [ -n "$second_required" ] \
+    && [ "$second_growth" -lt $((second_required - 20)) ]; then
     ctl interact "$X1" "$Y" "$Z1" >/dev/null || fail "bone meal click failed"
     ctl wait 25
     echo "after bone meal 2: $(info "$X1" "$Y" "$Z1")"
 fi
-ctl wait 30
+for _ in $(seq 12); do
+    if [ "$(ready_of "$X1" "$Y" "$Z1")" = true ]; then
+        break
+    fi
+    ctl wait 5 >/dev/null
+done
 line=$(info "$X1" "$Y" "$Z1")
 echo "fertilised: $line"
 [ "$(ready_of "$X1" "$Y" "$Z1")" = true ] || fail "the pot is not ready after bone meal: $line"
@@ -533,6 +586,104 @@ ctl wait 8
 after=$(( $(count_item minecraft:wheat) + $(dropped_item minecraft:wheat) ))
 echo "second click wheat: $before -> $after"
 [ "$after" -le "$before" ] || fail "a young pot harvested wheat: $before -> $after"
+
+say "the readout needs an operator"
+# `/botanypots info` names a pot's soil, seed and growth at coordinates the caller
+# chooses, so a non-operator must not read it (the review finding). The launched
+# player is the world's owner, so it reads the pot; the real non-operator is a LAN
+# guest at permission level 0.
+#
+# `op`/`deop` cannot produce that guest: both are dedicated-server commands, and
+# an integrated server refuses them with `command.unknown.command`
+# (`commands/profiles.rs:16-23`, `dedicated_lists`). The first version of this
+# phase ran `deop`, grepped the window for `Unknown or incomplete command`, and
+# matched the *failed `deop`'s own* refusal while the player stayed level 4 — a
+# passing assertion that proved nothing. The refusal text alone is ambiguous for
+# the same reason, so this phase is a differential: the same guest runs level-0
+# commands that must answer, and only then the level-2 usage that must not.
+line=$(info "$X1" "$Y" "$Z1")
+echo "  as an operator: $line"
+echo "$line" | grep -q "^botanypots:terracotta_botany_pot: growth=" \
+    || fail "an operator could not read the pot: $line"
+# A position holding no pot names no block: the readout must not double as a
+# world probe (the air above the pot is the nearest non-pot position).
+ctl chat "/botanypots info $X1 $((Y + 1)) $Z1" >/dev/null
+ctl wait 4 >/dev/null
+NOT_POT=$(ctl messages 8 | jq -r '.chat[]' | grep -m1 -E '^(not a botany pot|[a-z0-9_]+:[a-z0-9_/]+: not a botany pot)$' || true)
+echo "  non-pot readout: ${NOT_POT:-none}"
+[ "$NOT_POT" = "not a botany pot" ] \
+    || fail "a non-pot position answered '$NOT_POT'; it must name no block"
+
+# The guest. `lan open 0` opens the world with guest commands OFF, and an
+# integrated server then gives every guest level 0 (`lan/hub.rs`
+# `default_permission`: 2 only when guest commands are allowed).
+LAN_PORT=$(ctl lan open 0 | jq -r '.port')
+[ "$LAN_PORT" != "null" ] || fail "the host did not open its world to LAN"
+echo "  LAN port $LAN_PORT (guest commands off: a guest joins at level 0)"
+rm -f "$GSOCK"
+HORIZON_HOME=$SCRATCH/guest "$CTL" --socket "$GSOCK" launch \
+    --game "$GAME" --headless --resources "$RES" --no-pause >/dev/null
+sleep 3
+CONNECT=$(gctl connect "127.0.0.1:$LAN_PORT" Guest 2>&1 || true)
+echo "  guest connect: $CONNECT"
+JOINED=false
+for _ in $(seq 1 60); do
+    if [ "$(gctl status 2>/dev/null | jq -r '.server.joined // false')" = true ] \
+        && [ "$(gctl status 2>/dev/null | jq -r '.server.loaded // false')" = true ]; then
+        JOINED=true
+        break
+    fi
+    sleep 2
+done
+[ "$JOINED" = true ] || fail "the guest never joined the LAN world"
+# Half one of the differential: the guest's command path is alive at level 0.
+# `/help` prints the usages a level-0 player may run, and `/list` is a server
+# reply (the guest's own name in it). Without these lines a refusal of
+# `/botanypots info` could mean "guests cannot run commands at all".
+gctl command "/help" >/dev/null
+HELP_REPLY=""
+for _ in $(seq 1 20); do
+    HELP_REPLY=$(gctl messages 12 | jq -r '.chat[]' 2>/dev/null | grep -m1 '^/' || true)
+    [ -n "$HELP_REPLY" ] && break
+    sleep 1
+done
+echo "  the level-0 guest runs /help: ${HELP_REPLY:-<none>}"
+[ -n "$HELP_REPLY" ] \
+    || fail "the level-0 guest cannot run /help, so a refusal below would prove nothing"
+gctl command "/list" >/dev/null
+LIST_REPLY=""
+for _ in $(seq 1 20); do
+    LIST_REPLY=$(gctl messages 6 | jq -r '.chat[]' 2>/dev/null | grep -m1 'players online' || true)
+    [ -n "$LIST_REPLY" ] && break
+    sleep 1
+done
+echo "  the level-0 guest runs /list: ${LIST_REPLY:-<none>}"
+[ -n "$LIST_REPLY" ] || fail "the level-0 guest cannot run /list either"
+# Half two: the same guest asks for the level-2 usage and is refused, with no
+# readout in its window. If the command were still level 0 this assertion fails;
+# if guest commands were off, the two lines above fail first.
+gctl command "/botanypots info $X1 $Y $Z1" >/dev/null
+GUEST_WINDOW=""
+for _ in $(seq 1 20); do
+    GUEST_WINDOW=$(gctl messages 4 | jq -r '.chat[]' 2>/dev/null || true)
+    grep -qiE 'unknown or incomplete command|permission|incorrect argument' <<<"$GUEST_WINDOW" && break
+    sleep 1
+done
+echo "  as a level-0 guest: $(tr '\n' ' ' <<<"$GUEST_WINDOW")"
+grep -qiE 'unknown or incomplete command|permission|incorrect argument' <<<"$GUEST_WINDOW" \
+    || fail "a level-0 guest was not refused: $GUEST_WINDOW"
+if grep -qE 'growth=|terracotta_botany_pot:' <<<"$GUEST_WINDOW"; then
+    fail "a level-0 guest received the readout: $GUEST_WINDOW"
+fi
+gctl quit >/dev/null 2>&1 || true
+sleep 1
+# Close the LAN publication again: the rest of the run is the owner's alone.
+ctl lan close >/dev/null 2>&1 || true
+# The owner still reads the pot: the refusal was the guest's level, not the world.
+line=$(info "$X1" "$Y" "$Z1")
+echo "  as an operator after the guest left: $line"
+echo "$line" | grep -q "^botanypots:terracotta_botany_pot: growth=" \
+    || fail "the operator lost the readout after the guest leg: $line"
 
 # ---------------------------------------------------------------------------
 # Slice 2 — the hopper pot
@@ -645,18 +796,49 @@ ctl wait 2 >/dev/null
 echo "storage slots filled with sticks: $filled / 12"
 [ "$filled" = 12 ] || fail "the storage holds $filled stick stacks, expected 12"
 insert_slots "$X7" "$Y" "$Z7" minecraft:dirt minecraft:wheat_seeds 15
+# Clear loose items around this pot first: anything counted after the harvest is
+# then the harvest's own (the selftest isolation technique the notes record).
+ctl command "execute in minecraft:overworld run kill @e[type=minecraft:item,x=$X7,y=$Y,z=$Z7,distance=..24]" >/dev/null
+ctl wait 4 >/dev/null
 bone_meal_to_cap "$X7" "$Y" "$Z7"
 ctl tp "$X7.5" 101 "$(($Z7 + 1)).5" >/dev/null
+ctl wait 6 >/dev/null
+# The overflow is read from beside the pot. The pot's own half-block collision can
+# push a player teleported into its space, so an off stand is retried a little
+# further out (still inside the read radius) and logged, not failed: the counts
+# below use a 24-block radius.
+STAND_X=$(ctl state | jq -r '.player.position[0] | floor')
+STAND_Z=$(ctl state | jq -r '.player.position[2] | floor')
+if [ "$STAND_X" != "$X7" ] || [ "$STAND_Z" != "$((Z7 + 1))" ]; then
+    ctl tp "$X7.5" 101 "$(($Z7 + 3)).5" >/dev/null
+    ctl wait 6 >/dev/null
+    STAND_X=$(ctl state | jq -r '.player.position[0] | floor')
+    STAND_Z=$(ctl state | jq -r '.player.position[2] | floor')
+fi
+echo "  overflow reader at $STAND_X,$STAND_Z (the pot is at $X7,$Z7)"
 ctl wait 40 >/dev/null
 wheat=$(count_item minecraft:wheat)
-dropped=$(dropped_item minecraft:wheat)
+dropped=$(dropped_item minecraft:wheat 24)
+seeds_dropped=$(dropped_item minecraft:wheat_seeds 24)
+harvested=$((wheat + dropped + seeds_dropped))
+if [ "$harvested" -lt 1 ]; then
+    # A failing run must name its cause: what the level holds, what the pot's own
+    # storage holds, and what the server says the pot is.
+    echo "  diagnostics: items near the player: $(ctl entities 24 item | jq -c '{n: (.entities | length), items: [.entities[].item.item]}')"
+    echo "  diagnostics: the pot reads '$(info "$X7" "$Y" "$Z7")', block '$(ctl block "$X7" "$Y" "$Z7" | jq -r '.block // ""')'"
+    echo "  diagnostics: the player holds $(ctl inventory | jq -c '.counts')"
+    ctl command "data get block $X7 $Y $Z7" >/dev/null
+    ctl wait 4 >/dev/null
+    echo "  diagnostics: pot data: $(ctl messages 4 | jq -r '.chat[]' | grep -m1 'block data' || echo none)"
+fi
 # The hand still holds bone meal from the meals above: a click would fertilise.
 empty_hand
 open_menu "$X7" "$Y" "$Z7" 15
 still=$(ctl screen | jq -r '[.slots[] | select(.slot >= 303 and .slot <= 314 and .item == "minecraft:stick")] | length')
 ctl close >/dev/null 2>&1 || true
-echo "overflow: wheat in inventory $wheat, on the ground $dropped; stick stacks still $still"
-[ $((wheat + dropped)) -ge 1 ] || fail "a full hopper pot destroyed its harvest (wheat $wheat, ground $dropped)"
+echo "overflow: wheat in inventory $wheat, wheat on the ground $dropped, seeds on the ground $seeds_dropped; stick stacks still $still"
+[ "$harvested" -ge 1 ] \
+    || fail "a full hopper pot destroyed its harvest (wheat $wheat, ground $dropped, seeds $seeds_dropped)"
 [ "$still" = 12 ] || fail "the full-storage control lost stick stacks ($still / 12)"
 
 say "an unknown botanypots id is refused"
@@ -698,4 +880,4 @@ if [ "$SELFTEST" = basic ]; then
     exit 1
 fi
 
-echo "PASS: the basic pot grows soil+seed crops on its own tick (not a random tick), a wrong soil or a non-crop seed does not grow, bone meal forces growth, and a click harvests the mature crop's loot and resets; the hopper pot crafts from hopper + pot, places, joins #botanypots:botany_pots, opens its fifteen slots, harvests itself into the twelve storage slots, exports them into the container below, pops an overflow instead of destroying it, and the basic pot does not self-harvest"
+echo "PASS: the basic pot grows soil+seed crops on its own tick (not a random tick), a wrong soil or a non-crop seed does not grow, bone meal forces growth, and a click harvests the mature crop's loot and resets; the hopper pot crafts from hopper + pot, places, joins #botanypots:botany_pots, opens its fifteen slots, harvests itself into the twelve storage slots, exports them into the container below, pops an overflow instead of destroying it, and the basic pot does not self-harvest; /botanypots info is operator-only: a level-0 LAN guest is refused while /help and /list still answer that same guest, and the world's owner still reads the pot"
